@@ -3,9 +3,11 @@
 //
 // Octagonal OCP-style logo interpretation:
 // - 3 concentric octagonal rings
-// - each ring has one side-gap
+// - inner ring (C): single side-gap open on the right in the logo pose
+// - middle + outer rings (P): shared bottom-left break with a stem/notch
+//   (missing corner facet + inset bottom bar so the left stem does not meet it)
 // - each ring only has 8 discrete rotations (45 degree steps)
-// - doorway opens when all 3 gaps align
+// - doorway opens when all 3 gap orientations align
 // - dot/person escapes through the aligned doorway
 // - GUI buttons rotate rings
 // - random rotation every 10 minutes
@@ -22,6 +24,7 @@
 #include <vector>
 #include <array>
 #include <algorithm>
+#include <utility>
 
 using namespace std;
 
@@ -34,6 +37,12 @@ static const float PI = 3.14159265358979323846f;
 // Octagon: 8 sides, 45 degrees per side.
 static const float STEP = PI / 4.0f;
 static const float HALF_STEP = STEP / 2.0f;
+
+// P-style outer-ring notch (local gap faces side 0 before rotation):
+// stem (local side 7) extends slightly into the gap; adjacent bottom
+// (local side 1) starts inset so it does not meet the stem.
+static const float P_STEM_EXT = HALF_STEP * 0.28f;
+static const float P_GAP_INSET = HALF_STEP * 0.55f;
 
 static const float DOT_RADIUS = 0.13f;
 static const float PLAYER_SPEED = 2.2f;
@@ -330,10 +339,15 @@ struct Ring
     float innerR = 0.0f;
     float outerR = 0.0f;
 
-    // Which octagon side is missing: 0..7
+    // Gap orientation in 45-degree steps: 0..7
     // 0 = right, 1 = upper-right, 2 = top, 3 = upper-left,
     // 4 = left, 5 = lower-left, 6 = bottom, 7 = lower-right.
+    // For C-style rings this is the missing side. For P-style rings it is
+    // the center of the main notch (stem sits on the CCW-adjacent side).
     int side = 0;
+
+    // false = C opening (single missing side); true = P notch / stem.
+    bool pStyle = false;
 
     // Visual rotation angle in radians. Unwrapped for smooth animation.
     float angle = 0.0f;
@@ -384,33 +398,28 @@ static float rejectFlash = 0.0f;
 // Ring initialization
 // ---------------------------------------------------------------------------
 
-static Ring makeRing(float innerR, float outerR, int side, Vec4 uiColor)
+static Ring makeRing(float innerR, float outerR, int side, bool pStyle, Vec4 uiColor)
 {
     float a = (float)side * STEP;
-    return Ring{innerR, outerR, side, a, a, false, uiColor};
+    return Ring{innerR, outerR, side, pStyle, a, a, false, uiColor};
 }
 
 static void initRings()
 {
-    // Inner ring: opening to the right, like the inner "C" in the logo.
-    rings[0] = makeRing(1.15f, 1.65f, 0, Vec4{1.00f, 0.55f, 0.15f, 1.00f});
+    // Inner ring: C opening to the right (logo pose).
+    rings[0] = makeRing(1.15f, 1.65f, 0, false, Vec4{1.00f, 0.55f, 0.15f, 1.00f});
 
-    // Middle ring: opening to the left.
-    rings[1] = makeRing(2.00f, 2.45f, 4, Vec4{0.15f, 0.85f, 0.75f, 1.00f});
-
-    // Outer ring: opening toward lower-left.
-    rings[2] = makeRing(2.75f, 3.20f, 5, Vec4{0.75f, 0.45f, 1.00f, 1.00f});
+    // Middle + outer: shared P-style break toward lower-left (logo pose).
+    rings[1] = makeRing(2.00f, 2.45f, 5, true, Vec4{0.15f, 0.85f, 0.75f, 1.00f});
+    rings[2] = makeRing(2.75f, 3.20f, 5, true, Vec4{0.75f, 0.45f, 1.00f, 1.00f});
 }
 
 // ---------------------------------------------------------------------------
-// Octagon wall geometry for collision
+// Octagon wall geometry for visuals + collision
 // ---------------------------------------------------------------------------
 
-static array<Vec2, 4> makeQuadWorld(const Ring& r, int worldSide)
+static array<Vec2, 4> makeRadialQuad(float innerR, float outerR, float a0, float a1)
 {
-    float a0 = (float)worldSide * STEP - HALF_STEP;
-    float a1 = (float)worldSide * STEP + HALF_STEP;
-
     float c0 = cosf(a0);
     float s0 = sinf(a0);
     float c1 = cosf(a1);
@@ -418,11 +427,57 @@ static array<Vec2, 4> makeQuadWorld(const Ring& r, int worldSide)
 
     return array<Vec2, 4>
     {
-        Vec2{r.innerR * c0, r.innerR * s0},
-        Vec2{r.outerR * c0, r.outerR * s0},
-        Vec2{r.outerR * c1, r.outerR * s1},
-        Vec2{r.innerR * c1, r.innerR * s1}
+        Vec2{innerR * c0, innerR * s0},
+        Vec2{outerR * c0, outerR * s0},
+        Vec2{outerR * c1, outerR * s1},
+        Vec2{innerR * c1, innerR * s1}
     };
+}
+
+// Solid angular spans in the ring's LOCAL frame (gap faces local side 0).
+// Visual code rotates these by r.angle; collision offsets by r.side * STEP.
+static void localSolidSpans(const Ring& r, vector<pair<float, float>>& spans)
+{
+    spans.clear();
+
+    if (!r.pStyle)
+    {
+        // C-style: omit local side 0 only.
+        for (int localSide = 1; localSide < 8; ++localSide)
+        {
+            float a0 = (float)localSide * STEP - HALF_STEP;
+            float a1 = (float)localSide * STEP + HALF_STEP;
+            spans.push_back({a0, a1});
+        }
+        return;
+    }
+
+    // P-style (logo outer bands):
+    // - omit local side 0 (main notch)
+    // - local side 1 (bottom when notch faces lower-left): inset from the gap
+    //   so the bar does not meet the stem
+    // - local sides 2..6: full
+    // - local side 7 (stem / left when notch faces lower-left): extend slightly
+    //   into the gap for a downward stem feel
+    {
+        float a0 = 1.0f * STEP - HALF_STEP + P_GAP_INSET;
+        float a1 = 1.0f * STEP + HALF_STEP;
+        if (a1 - a0 > 1e-4f)
+            spans.push_back({a0, a1});
+    }
+
+    for (int localSide = 2; localSide <= 6; ++localSide)
+    {
+        float a0 = (float)localSide * STEP - HALF_STEP;
+        float a1 = (float)localSide * STEP + HALF_STEP;
+        spans.push_back({a0, a1});
+    }
+
+    {
+        float a0 = 7.0f * STEP - HALF_STEP;
+        float a1 = 7.0f * STEP + HALF_STEP + P_STEM_EXT;
+        spans.push_back({a0, a1});
+    }
 }
 
 static bool pointInQuad(Vec2 p, const array<Vec2, 4>& q)
@@ -488,6 +543,9 @@ static bool collidesWalls(float x, float y)
     Vec2 p{x, y};
     float rr = length(p);
 
+    vector<pair<float, float>> spans;
+    spans.reserve(8);
+
     for (int i = 0; i < 3; ++i)
     {
         const Ring& r = rings[i];
@@ -499,12 +557,12 @@ static bool collidesWalls(float x, float y)
         if (rr < minPossible || rr > maxPossible)
             continue;
 
-        for (int s = 0; s < 8; ++s)
-        {
-            if (s == r.side)
-                continue; // gap side
+        localSolidSpans(r, spans);
+        float base = (float)r.side * STEP;
 
-            array<Vec2, 4> q = makeQuadWorld(r, s);
+        for (const auto& sp : spans)
+        {
+            array<Vec2, 4> q = makeRadialQuad(r.innerR, r.outerR, base + sp.first, base + sp.second);
 
             if (circleHitsQuad(p, DOT_RADIUS, q))
                 return true;
@@ -706,21 +764,18 @@ static void addRingVisual(DynamicMesh2D& m, const Ring& r, Vec4 color)
         return Vec2{p.x * c - p.y * s, p.x * s + p.y * c};
     };
 
-    // Local gap is side 0. Rotate the whole ring by r.angle.
-    for (int localSide = 1; localSide < 8; ++localSide)
+    vector<pair<float, float>> spans;
+    localSolidSpans(r, spans);
+
+    // Local spans assume gap at side 0; rotate the whole ring by r.angle.
+    for (const auto& sp : spans)
     {
-        float a0 = (float)localSide * STEP - HALF_STEP;
-        float a1 = (float)localSide * STEP + HALF_STEP;
+        array<Vec2, 4> q = makeRadialQuad(r.innerR, r.outerR, sp.first, sp.second);
 
-        Vec2 q0{r.innerR * cosf(a0), r.innerR * sinf(a0)};
-        Vec2 q1{r.outerR * cosf(a0), r.outerR * sinf(a0)};
-        Vec2 q2{r.outerR * cosf(a1), r.outerR * sinf(a1)};
-        Vec2 q3{r.innerR * cosf(a1), r.innerR * sinf(a1)};
-
-        q0 = rot(q0);
-        q1 = rot(q1);
-        q2 = rot(q2);
-        q3 = rot(q3);
+        Vec2 q0 = rot(q[0]);
+        Vec2 q1 = rot(q[1]);
+        Vec2 q2 = rot(q[2]);
+        Vec2 q3 = rot(q[3]);
 
         m.addQuad(q0, q1, q2, q3, color);
     }
@@ -731,10 +786,19 @@ static void addDoorHighlight(DynamicMesh2D& m)
     if (!doorUsable)
         return;
 
+    // All rings share the same gap orientation when the door is open.
+    // Passage is limited by the C opening, but the green wedge also covers
+    // the P-notch flare (inset into the CW-adjacent side) so the outer
+    // opening reads clearly.
     int side = rings[0].side;
+    float mid = (float)side * STEP;
 
-    float a0 = (float)side * STEP - HALF_STEP * 0.72f;
-    float a1 = (float)side * STEP + HALF_STEP * 0.72f;
+    float a0 = mid - HALF_STEP * 0.72f;
+    float a1 = mid + HALF_STEP * 0.72f;
+
+    // If outer rings are P-style, extend the highlight toward the inset bottom.
+    if (rings[1].pStyle || rings[2].pStyle)
+        a1 = mid + HALF_STEP + P_GAP_INSET * 0.65f;
 
     float R = rings[2].outerR + 0.25f;
 
