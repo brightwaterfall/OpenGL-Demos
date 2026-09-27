@@ -46,8 +46,8 @@ static const float HALF_STEP = STEP / 2.0f;
 //   bottom flat / perpendicular to the stem) — not a vertical stem-parallel cut.
 // - P_GAP_INSET: bottom bar (local side 1) starts this far from the gap end
 //   with a VERTICAL (stem-parallel) start so the notch reads as square ends.
-static const float P_STEM_EXT = 0.55f;
-static const float P_GAP_INSET = 0.18f;
+static const float P_STEM_EXT = 0.30f;
+static const float P_GAP_INSET = 0.45f;
 
 static const float DOT_RADIUS = 0.13f;
 static const float PLAYER_SPEED = 2.2f;
