@@ -4,8 +4,9 @@
 // Octagonal OCP-style logo interpretation:
 // - 3 concentric octagonal rings
 // - inner ring (C): single side-gap open on the right in the logo pose
-// - middle + outer rings (P): shared bottom-left break with a stem/notch
-//   (missing corner facet + inset bottom bar so the left stem does not meet it)
+// - middle + outer rings (backwards-Q): shared bottom-left break with a
+//   left stem that continues past the corner + bottom bar inset so they
+//   do not meet (reads as a backwards Q / stylized P)
 // - each ring only has 8 discrete rotations (45 degree steps)
 // - doorway opens when all 3 gap orientations align
 // - dot/person escapes through the aligned doorway
@@ -38,11 +39,13 @@ static const float PI = 3.14159265358979323846f;
 static const float STEP = PI / 4.0f;
 static const float HALF_STEP = STEP / 2.0f;
 
-// P-style outer-ring notch (local gap faces side 0 before rotation):
-// stem (local side 7) extends slightly into the gap; adjacent bottom
-// (local side 1) starts inset so it does not meet the stem.
-static const float P_STEM_EXT = HALF_STEP * 0.28f;
-static const float P_GAP_INSET = HALF_STEP * 0.55f;
+// Backwards-Q outer-ring notch (local gap faces side 0 before rotation).
+// Fractions of one octagon side length along the FLAT edge (not angles):
+// - P_STEM_EXT: left stem (local side 7) continues past its end vertex
+// - P_GAP_INSET: bottom bar (local side 1) starts this far from the gap end
+//   so the stem and bottom do not meet (logo lower-left break).
+static const float P_STEM_EXT = 0.72f;
+static const float P_GAP_INSET = 0.34f;
 
 static const float DOT_RADIUS = 0.13f;
 static const float PLAYER_SPEED = 2.2f;
@@ -342,11 +345,11 @@ struct Ring
     // Gap orientation in 45-degree steps: 0..7
     // 0 = right, 1 = upper-right, 2 = top, 3 = upper-left,
     // 4 = left, 5 = lower-left, 6 = bottom, 7 = lower-right.
-    // For C-style rings this is the missing side. For P-style rings it is
-    // the center of the main notch (stem sits on the CCW-adjacent side).
+    // For C-style rings this is the missing side. For backwards-Q (pStyle)
+    // rings it is the omitted corner facet; the stem is the CCW-adjacent flat.
     int side = 0;
 
-    // false = C opening (single missing side); true = P notch / stem.
+    // false = C opening (single missing side); true = backwards-Q stem/notch.
     bool pStyle = false;
 
     // Visual rotation angle in radians. Unwrapped for smooth animation.
@@ -409,7 +412,8 @@ static void initRings()
     // Inner ring: C opening to the right (logo pose).
     rings[0] = makeRing(1.15f, 1.65f, 0, false, Vec4{1.00f, 0.55f, 0.15f, 1.00f});
 
-    // Middle + outer: shared P-style break toward lower-left (logo pose).
+    // Middle + outer: shared backwards-Q break at lower-left (logo pose).
+    // Left vertical stem + omitted bottom-left facet + inset bottom bar.
     rings[1] = makeRing(2.00f, 2.45f, 5, true, Vec4{0.15f, 0.85f, 0.75f, 1.00f});
     rings[2] = makeRing(2.75f, 3.20f, 5, true, Vec4{0.75f, 0.45f, 1.00f, 1.00f});
 }
@@ -418,66 +422,64 @@ static void initRings()
 // Octagon wall geometry for visuals + collision
 // ---------------------------------------------------------------------------
 
-static array<Vec2, 4> makeRadialQuad(float innerR, float outerR, float a0, float a1)
+// Trapezoid for one octagon side, parameterized along the FLAT edge.
+// t=0 is the CCW-start vertex, t=1 is the CW-end vertex. Values outside
+// [0,1] continue past a vertex along the same flat (used for the Q stem).
+static array<Vec2, 4> makeFlatSideQuad(float innerR, float outerR, int localSide, float t0, float t1)
 {
-    float c0 = cosf(a0);
-    float s0 = sinf(a0);
-    float c1 = cosf(a1);
-    float s1 = sinf(a1);
+    float a0 = (float)localSide * STEP - HALF_STEP;
+    float a1 = (float)localSide * STEP + HALF_STEP;
 
-    return array<Vec2, 4>
+    Vec2 i0{innerR * cosf(a0), innerR * sinf(a0)};
+    Vec2 i1{innerR * cosf(a1), innerR * sinf(a1)};
+    Vec2 o0{outerR * cosf(a0), outerR * sinf(a0)};
+    Vec2 o1{outerR * cosf(a1), outerR * sinf(a1)};
+
+    auto lerp = [](Vec2 a, Vec2 b, float t) -> Vec2
     {
-        Vec2{innerR * c0, innerR * s0},
-        Vec2{outerR * c0, outerR * s0},
-        Vec2{outerR * c1, outerR * s1},
-        Vec2{innerR * c1, innerR * s1}
+        return Vec2{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
     };
+
+    Vec2 ia = lerp(i0, i1, t0);
+    Vec2 ib = lerp(i0, i1, t1);
+    Vec2 oa = lerp(o0, o1, t0);
+    Vec2 ob = lerp(o0, o1, t1);
+
+    return array<Vec2, 4>{ia, oa, ob, ib};
 }
 
-// Solid angular spans in the ring's LOCAL frame (gap faces local side 0).
-// Visual code rotates these by r.angle; collision offsets by r.side * STEP.
-static void localSolidSpans(const Ring& r, vector<pair<float, float>>& spans)
+// Solid wall quads in the ring's LOCAL frame (gap faces local side 0).
+// Visual code rotates these by r.angle; collision rotates by r.side * STEP.
+static void localSolidQuads(const Ring& r, vector<array<Vec2, 4>>& quads)
 {
-    spans.clear();
+    quads.clear();
 
     if (!r.pStyle)
     {
-        // C-style: omit local side 0 only.
+        // C-style: omit local side 0 only (full flats elsewhere).
         for (int localSide = 1; localSide < 8; ++localSide)
-        {
-            float a0 = (float)localSide * STEP - HALF_STEP;
-            float a1 = (float)localSide * STEP + HALF_STEP;
-            spans.push_back({a0, a1});
-        }
+            quads.push_back(makeFlatSideQuad(r.innerR, r.outerR, localSide, 0.0f, 1.0f));
         return;
     }
 
-    // P-style (logo outer bands):
-    // - omit local side 0 (main notch)
+    // Backwards-Q (logo outer bands):
+    // - omit local side 0 (bottom-left facet in the logo pose)
     // - local side 1 (bottom when notch faces lower-left): inset from the gap
     //   so the bar does not meet the stem
     // - local sides 2..6: full
-    // - local side 7 (stem / left when notch faces lower-left): extend slightly
-    //   into the gap for a downward stem feel
+    // - local side 7 (left stem when notch faces lower-left): continue past
+    //   the end vertex along the flat for a hanging stem (backwards Q)
     {
-        float a0 = 1.0f * STEP - HALF_STEP + P_GAP_INSET;
-        float a1 = 1.0f * STEP + HALF_STEP;
-        if (a1 - a0 > 1e-4f)
-            spans.push_back({a0, a1});
+        float t0 = P_GAP_INSET;
+        float t1 = 1.0f;
+        if (t1 - t0 > 1e-4f)
+            quads.push_back(makeFlatSideQuad(r.innerR, r.outerR, 1, t0, t1));
     }
 
     for (int localSide = 2; localSide <= 6; ++localSide)
-    {
-        float a0 = (float)localSide * STEP - HALF_STEP;
-        float a1 = (float)localSide * STEP + HALF_STEP;
-        spans.push_back({a0, a1});
-    }
+        quads.push_back(makeFlatSideQuad(r.innerR, r.outerR, localSide, 0.0f, 1.0f));
 
-    {
-        float a0 = 7.0f * STEP - HALF_STEP;
-        float a1 = 7.0f * STEP + HALF_STEP + P_STEM_EXT;
-        spans.push_back({a0, a1});
-    }
+    quads.push_back(makeFlatSideQuad(r.innerR, r.outerR, 7, 0.0f, 1.0f + P_STEM_EXT));
 }
 
 static bool pointInQuad(Vec2 p, const array<Vec2, 4>& q)
@@ -543,26 +545,33 @@ static bool collidesWalls(float x, float y)
     Vec2 p{x, y};
     float rr = length(p);
 
-    vector<pair<float, float>> spans;
-    spans.reserve(8);
+    vector<array<Vec2, 4>> quads;
+    quads.reserve(8);
 
     for (int i = 0; i < 3; ++i)
     {
         const Ring& r = rings[i];
 
-        // Conservative radial broad-phase.
+        // Conservative radial broad-phase (stem may overhang slightly).
         float minPossible = r.innerR * cosf(HALF_STEP) - DOT_RADIUS;
-        float maxPossible = r.outerR + DOT_RADIUS;
+        float maxPossible = r.outerR * (1.0f + (r.pStyle ? P_STEM_EXT * 0.35f : 0.0f)) + DOT_RADIUS;
 
         if (rr < minPossible || rr > maxPossible)
             continue;
 
-        localSolidSpans(r, spans);
+        localSolidQuads(r, quads);
         float base = (float)r.side * STEP;
+        float cb = cosf(base);
+        float sb = sinf(base);
 
-        for (const auto& sp : spans)
+        for (const auto& lq : quads)
         {
-            array<Vec2, 4> q = makeRadialQuad(r.innerR, r.outerR, base + sp.first, base + sp.second);
+            array<Vec2, 4> q;
+            for (int k = 0; k < 4; ++k)
+            {
+                Vec2 lp = lq[k];
+                q[k] = Vec2{lp.x * cb - lp.y * sb, lp.x * sb + lp.y * cb};
+            }
 
             if (circleHitsQuad(p, DOT_RADIUS, q))
                 return true;
@@ -764,18 +773,16 @@ static void addRingVisual(DynamicMesh2D& m, const Ring& r, Vec4 color)
         return Vec2{p.x * c - p.y * s, p.x * s + p.y * c};
     };
 
-    vector<pair<float, float>> spans;
-    localSolidSpans(r, spans);
+    vector<array<Vec2, 4>> quads;
+    localSolidQuads(r, quads);
 
-    // Local spans assume gap at side 0; rotate the whole ring by r.angle.
-    for (const auto& sp : spans)
+    // Local quads assume gap at side 0; rotate the whole ring by r.angle.
+    for (const auto& lq : quads)
     {
-        array<Vec2, 4> q = makeRadialQuad(r.innerR, r.outerR, sp.first, sp.second);
-
-        Vec2 q0 = rot(q[0]);
-        Vec2 q1 = rot(q[1]);
-        Vec2 q2 = rot(q[2]);
-        Vec2 q3 = rot(q[3]);
+        Vec2 q0 = rot(lq[0]);
+        Vec2 q1 = rot(lq[1]);
+        Vec2 q2 = rot(lq[2]);
+        Vec2 q3 = rot(lq[3]);
 
         m.addQuad(q0, q1, q2, q3, color);
     }
@@ -787,18 +794,17 @@ static void addDoorHighlight(DynamicMesh2D& m)
         return;
 
     // All rings share the same gap orientation when the door is open.
-    // Passage is limited by the C opening, but the green wedge also covers
-    // the P-notch flare (inset into the CW-adjacent side) so the outer
-    // opening reads clearly.
+    // Passage is limited by the C opening; the green wedge also covers the
+    // backwards-Q notch flare (inset into the CW-adjacent bottom bar).
     int side = rings[0].side;
     float mid = (float)side * STEP;
 
     float a0 = mid - HALF_STEP * 0.72f;
     float a1 = mid + HALF_STEP * 0.72f;
 
-    // If outer rings are P-style, extend the highlight toward the inset bottom.
+    // Cover the inset portion of the bottom flat on Q-style outer rings.
     if (rings[1].pStyle || rings[2].pStyle)
-        a1 = mid + HALF_STEP + P_GAP_INSET * 0.65f;
+        a1 = mid + HALF_STEP + STEP * P_GAP_INSET * 0.85f;
 
     float R = rings[2].outerR + 0.25f;
 
