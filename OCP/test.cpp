@@ -409,13 +409,15 @@ static Ring makeRing(float innerR, float outerR, int side, bool pStyle, Vec4 uiC
 
 static void initRings()
 {
+    // Concentric radii tuned to the client OCP logo: thick black bands with
+    // narrow white channels (band:gap ~10:1). Outer outerR kept at 3.20.
     // Inner ring: C opening to the right (logo pose).
-    rings[0] = makeRing(1.15f, 1.65f, 0, false, Vec4{1.00f, 0.55f, 0.15f, 1.00f});
+    rings[0] = makeRing(0.80f, 1.51f, 0, false, Vec4{1.00f, 0.55f, 0.15f, 1.00f});
 
     // Middle + outer: shared backwards-Q break at lower-left (logo pose).
     // Left vertical stem + omitted bottom-left facet + inset bottom bar.
-    rings[1] = makeRing(2.00f, 2.45f, 5, true, Vec4{0.15f, 0.85f, 0.75f, 1.00f});
-    rings[2] = makeRing(2.75f, 3.20f, 5, true, Vec4{0.75f, 0.45f, 1.00f, 1.00f});
+    rings[1] = makeRing(1.58f, 2.32f, 5, true, Vec4{0.15f, 0.85f, 0.75f, 1.00f});
+    rings[2] = makeRing(2.39f, 3.20f, 5, true, Vec4{0.75f, 0.45f, 1.00f, 1.00f});
 }
 
 // ---------------------------------------------------------------------------
