@@ -4,9 +4,10 @@
 // Octagonal OCP-style logo interpretation:
 // - 3 concentric octagonal rings
 // - inner ring (C): single side-gap open on the right in the logo pose
-// - middle + outer rings (backwards-Q): shared bottom-left break with a
-//   left stem that turns the octagon diagonal (partial side 0, square tip) +
-//   bottom bar inset so they do not meet (reads as a backwards Q / stylized P)
+// - middle + outer rings (backwards-Q): both bands run straight past their
+//   bottom-left corner and are cut by two shared vertical lines, which draws
+//   the logo's long tapering stem, its square-ended bottom bar, and the
+//   straight corridor between them (reads as a backwards Q / stylized P)
 // - each ring only has 8 discrete rotations (45 degree steps)
 // - doorway opens when all 3 gap orientations align
 // - dot/person escapes through the aligned doorway
@@ -17,6 +18,8 @@
 
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
+
+#include "ocp_logo_geom.h"
 
 #include <cmath>
 #include <cstdio>
@@ -32,22 +35,9 @@ using namespace std;
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-static const float PI = 3.14159265358979323846f;
-
-// Octagon: 8 sides, 45 degrees per side.
-static const float STEP = PI / 4.0f;
-static const float HALF_STEP = STEP / 2.0f;
-
-// Backwards-Q outer-ring notch (local gap faces side 0 before rotation).
-// Fractions of one octagon side length along the FLAT edge (not angles):
-// - P_STEM_EXT: how far the BL diagonal tip (local side 0) continues past the
-//   stem corner; tip end is cut HORIZONTAL in the logo pose (parallel to the
-//   bottom flat / perpendicular to the stem) — not a vertical stem-parallel cut.
-// - P_GAP_INSET: bottom bar (local side 1) starts this far from the gap end
-//   with a VERTICAL (stem-parallel) start so the notch reads as square ends.
-static const float P_STEM_EXT = 0.30f;
-static const float P_GAP_INSET = 0.45f;
+//
+// Octagon constants, band radii and the backwards-Q notch lines all live in
+// ocp_logo_geom.h, which the offline reference checker shares.
 
 static const float DOT_RADIUS = 0.13f;
 static const float PLAYER_SPEED = 2.2f;
@@ -63,12 +53,7 @@ static const float WORLD_LIMIT = 6.0f;
 // ---------------------------------------------------------------------------
 // Tiny 2D math, no GLM
 // ---------------------------------------------------------------------------
-
-struct Vec2
-{
-    float x = 0.0f;
-    float y = 0.0f;
-};
+// Vec2 and its helpers come from ocp_logo_geom.h.
 
 struct Vec4
 {
@@ -77,41 +62,6 @@ struct Vec4
     float z = 0.0f;
     float w = 0.0f;
 };
-
-static inline Vec2 operator+(Vec2 a, Vec2 b)
-{
-    return Vec2{a.x + b.x, a.y + b.y};
-}
-
-static inline Vec2 operator-(Vec2 a, Vec2 b)
-{
-    return Vec2{a.x - b.x, a.y - b.y};
-}
-
-static inline Vec2 operator*(Vec2 a, float s)
-{
-    return Vec2{a.x * s, a.y * s};
-}
-
-static inline float dot2(Vec2 a, Vec2 b)
-{
-    return a.x * b.x + a.y * b.y;
-}
-
-static inline float cross2(Vec2 a, Vec2 b)
-{
-    return a.x * b.y - a.y * b.x;
-}
-
-static inline float length2(Vec2 a)
-{
-    return dot2(a, a);
-}
-
-static inline float length(Vec2 a)
-{
-    return sqrtf(length2(a));
-}
 
 struct Mat4
 {
@@ -412,236 +362,27 @@ static Ring makeRing(float innerR, float outerR, int side, bool pStyle, Vec4 uiC
 
 static void initRings()
 {
-    // Concentric radii tuned to the client OCP logo: thick black bands with
-    // narrow white channels (band:gap ~10:1). Outer outerR kept at 3.20.
-    // Inner ring: C opening to the right (logo pose).
-    rings[0] = makeRing(0.80f, 1.51f, 0, false, Vec4{1.00f, 0.55f, 0.15f, 1.00f});
+    // Radii traced from the client logo; see ocp_logo_geom.h for the measured
+    // pixel distances. Inner ring: C opening to the right (logo pose).
+    rings[0] = makeRing(INNER_BAND_IN, INNER_BAND_OUT, 0, false,
+                        Vec4{1.00f, 0.55f, 0.15f, 1.00f});
 
     // Middle + outer: shared backwards-Q break at lower-left (logo pose).
-    // Left vertical stem + partial BL diagonal tip (horizontal cut) + inset bottom.
-    rings[1] = makeRing(1.58f, 2.32f, 5, true, Vec4{0.15f, 0.85f, 0.75f, 1.00f});
-    rings[2] = makeRing(2.39f, 3.20f, 5, true, Vec4{0.75f, 0.45f, 1.00f, 1.00f});
+    rings[1] = makeRing(MID_BAND_IN, MID_BAND_OUT, 5, true,
+                        Vec4{0.15f, 0.85f, 0.75f, 1.00f});
+    rings[2] = makeRing(OUTER_BAND_IN, OUTER_BAND_OUT, 5, true,
+                        Vec4{0.75f, 0.45f, 1.00f, 1.00f});
 }
 
 // ---------------------------------------------------------------------------
 // Octagon wall geometry for visuals + collision
 // ---------------------------------------------------------------------------
 
-// Trapezoid for one octagon side, parameterized along the FLAT edge.
-// t=0 is the CCW-start vertex, t=1 is the CW-end vertex. Values outside
-// [0,1] continue past a vertex along the same flat (used for the Q stem).
-static array<Vec2, 4> makeFlatSideQuad(float innerR, float outerR, int localSide, float t0, float t1)
+// Wall polygons and the circle/polygon tests come from ocp_logo_geom.h, so the
+// shape the player collides with is the one the offline checkers measure.
+static void ringLocalPolys(const Ring& r, vector<Poly>& polys)
 {
-    float a0 = (float)localSide * STEP - HALF_STEP;
-    float a1 = (float)localSide * STEP + HALF_STEP;
-
-    Vec2 i0{innerR * cosf(a0), innerR * sinf(a0)};
-    Vec2 i1{innerR * cosf(a1), innerR * sinf(a1)};
-    Vec2 o0{outerR * cosf(a0), outerR * sinf(a0)};
-    Vec2 o1{outerR * cosf(a1), outerR * sinf(a1)};
-
-    auto lerp = [](Vec2 a, Vec2 b, float t) -> Vec2
-    {
-        return Vec2{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
-    };
-
-    Vec2 ia = lerp(i0, i1, t0);
-    Vec2 ib = lerp(i0, i1, t1);
-    Vec2 oa = lerp(o0, o1, t0);
-    Vec2 ob = lerp(o0, o1, t1);
-
-    return array<Vec2, 4>{ia, oa, ob, ib};
-}
-
-// Flat-side trapezoid with optional orthogonal (side-normal) end caps.
-// Ortho ends are perpendicular to the flat. Used for the bottom-bar start so
-// the free end is vertical in the logo pose (stem-parallel), not a radial slant.
-static array<Vec2, 4> makeFlatSideQuadEnds(
-    float innerR, float outerR, int localSide,
-    float t0, float t1, bool ortho0, bool ortho1)
-{
-    float a0 = (float)localSide * STEP - HALF_STEP;
-    float a1 = (float)localSide * STEP + HALF_STEP;
-    float mid = (float)localSide * STEP;
-
-    Vec2 i0{innerR * cosf(a0), innerR * sinf(a0)};
-    Vec2 i1{innerR * cosf(a1), innerR * sinf(a1)};
-    Vec2 o0{outerR * cosf(a0), outerR * sinf(a0)};
-    Vec2 o1{outerR * cosf(a1), outerR * sinf(a1)};
-
-    Vec2 n{cosf(mid), sinf(mid)};
-    float band = (outerR - innerR) * cosf(HALF_STEP);
-
-    auto atOuter = [&](float t) -> Vec2
-    {
-        return Vec2{o0.x + (o1.x - o0.x) * t, o0.y + (o1.y - o0.y) * t};
-    };
-    auto atInnerRadial = [&](float t) -> Vec2
-    {
-        return Vec2{i0.x + (i1.x - i0.x) * t, i0.y + (i1.y - i0.y) * t};
-    };
-    auto orthoInner = [&](Vec2 oPt) -> Vec2
-    {
-        return Vec2{oPt.x - n.x * band, oPt.y - n.y * band};
-    };
-
-    Vec2 oa = atOuter(t0);
-    Vec2 ob = atOuter(t1);
-    Vec2 ia = ortho0 ? orthoInner(oa) : atInnerRadial(t0);
-    Vec2 ib = ortho1 ? orthoInner(ob) : atInnerRadial(t1);
-
-    return array<Vec2, 4>{ia, oa, ob, ib};
-}
-
-// Backwards-Q diagonal tip (local side 0): from the stem corner along the
-// octagon diagonal, ending on a cut PARALLEL TO THE BOTTOM flat (local side 1).
-// In the logo pose that cut is horizontal — a flat stem-tip bottom — unlike
-// f9ec56a's stem-parallel (vertical) cut which the client rejected.
-// Shared across Q rings via framing outerR 3.20 so middle+outer tips align.
-static array<Vec2, 4> makeDiagStemTipQuad(float innerR, float outerR, float tEnd)
-{
-    float a0 = -HALF_STEP;
-    float a1 = HALF_STEP;
-
-    auto lerp = [](Vec2 a, Vec2 b, float t) -> Vec2
-    {
-        return Vec2{a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
-    };
-
-    auto at = [&](float R, float t) -> Vec2
-    {
-        Vec2 p0{R * cosf(a0), R * sinf(a0)};
-        Vec2 p1{R * cosf(a1), R * sinf(a1)};
-        return lerp(p0, p1, t);
-    };
-
-    // Bottom-flat direction = local side 1 (horizontal tip cut in logo pose).
-    float s1a0 = 1.0f * STEP - HALF_STEP;
-    float s1a1 = 1.0f * STEP + HALF_STEP;
-    Vec2 botDir{
-        cosf(s1a1) - cosf(s1a0),
-        sinf(s1a1) - sinf(s1a0)
-    };
-
-    const float tipRefR = 3.20f;
-    Vec2 cutOrigin = at(tipRefR, tEnd);
-
-    auto intersectBotCut = [&](float R) -> Vec2
-    {
-        // Intersection of side-0 edge at radius R with cutOrigin + s*botDir.
-        Vec2 p0{R * cosf(a0), R * sinf(a0)};
-        Vec2 p1{R * cosf(a1), R * sinf(a1)};
-        Vec2 edge = p1 - p0;
-        float det = edge.x * botDir.y - edge.y * botDir.x;
-        if (fabsf(det) < 1e-8f)
-            return at(R, tEnd);
-        Vec2 d = cutOrigin - p0;
-        float u = (d.x * botDir.y - d.y * botDir.x) / det;
-        return p0 + edge * u;
-    };
-
-    Vec2 ia{innerR * cosf(a0), innerR * sinf(a0)};
-    Vec2 oa{outerR * cosf(a0), outerR * sinf(a0)};
-    Vec2 ob = intersectBotCut(outerR);
-    Vec2 ib = intersectBotCut(innerR);
-
-    return array<Vec2, 4>{ia, oa, ob, ib};
-}
-
-// Solid wall quads in the ring's LOCAL frame (gap faces local side 0).
-// Visual code rotates these by r.angle; collision rotates by r.side * STEP.
-static void localSolidQuads(const Ring& r, vector<array<Vec2, 4>>& quads)
-{
-    quads.clear();
-
-    if (!r.pStyle)
-    {
-        // C-style: omit local side 0 only (full flats elsewhere).
-        for (int localSide = 1; localSide < 8; ++localSide)
-            quads.push_back(makeFlatSideQuad(r.innerR, r.outerR, localSide, 0.0f, 1.0f));
-        return;
-    }
-
-    // Backwards-Q (logo outer bands):
-    // - local side 0 (BL diagonal): partial tip to P_STEM_EXT, cut parallel to
-    //   the bottom flat (horizontal in logo pose) for a square stem tip
-    // - local side 1 (bottom): inset start with ORTHOGONAL end (vertical in
-    //   logo pose) so the bar does not meet the tip
-    // - local sides 2..6: full
-    // - local side 7 (left stem): full flat to the corner only (meets side 0)
-    if (P_STEM_EXT > 1e-4f)
-        quads.push_back(makeDiagStemTipQuad(r.innerR, r.outerR, P_STEM_EXT));
-
-    {
-        float t0 = P_GAP_INSET;
-        float t1 = 1.0f;
-        if (t1 - t0 > 1e-4f)
-            quads.push_back(makeFlatSideQuadEnds(
-                r.innerR, r.outerR, 1, t0, t1, true, false));
-    }
-
-    for (int localSide = 2; localSide <= 6; ++localSide)
-        quads.push_back(makeFlatSideQuad(r.innerR, r.outerR, localSide, 0.0f, 1.0f));
-
-    quads.push_back(makeFlatSideQuad(r.innerR, r.outerR, 7, 0.0f, 1.0f));
-}
-
-static bool pointInQuad(Vec2 p, const array<Vec2, 4>& q)
-{
-    bool hasPos = false;
-    bool hasNeg = false;
-
-    for (int i = 0; i < 4; ++i)
-    {
-        Vec2 a = q[i];
-        Vec2 b = q[(i + 1) % 4];
-
-        Vec2 e = b - a;
-        Vec2 vp = p - a;
-
-        float c = cross2(e, vp);
-
-        if (c > 1e-5f) hasPos = true;
-        if (c < -1e-5f) hasNeg = true;
-
-        if (hasPos && hasNeg)
-            return false;
-    }
-
-    return true;
-}
-
-static float distPointSeg(Vec2 p, Vec2 a, Vec2 b)
-{
-    Vec2 ab = b - a;
-    float len = length2(ab);
-
-    if (len < 1e-8f)
-        return length(p - a);
-
-    float t = dot2(p - a, ab) / len;
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
-
-    Vec2 closest = a + ab * t;
-    return length(p - closest);
-}
-
-static bool circleHitsQuad(Vec2 c, float radius, const array<Vec2, 4>& q)
-{
-    if (pointInQuad(c, q))
-        return true;
-
-    for (int i = 0; i < 4; ++i)
-    {
-        Vec2 a = q[i];
-        Vec2 b = q[(i + 1) % 4];
-
-        if (distPointSeg(c, a, b) < radius - 1e-5f)
-            return true;
-    }
-
-    return false;
+    localSolidPolys(r.innerR, r.outerR, r.pStyle, polys);
 }
 
 static bool collidesWalls(float x, float y)
@@ -649,35 +390,26 @@ static bool collidesWalls(float x, float y)
     Vec2 p{x, y};
     float rr = length(p);
 
-    vector<array<Vec2, 4>> quads;
-    quads.reserve(8);
+    vector<Poly> polys;
+    polys.reserve(8);
 
     for (int i = 0; i < 3; ++i)
     {
         const Ring& r = rings[i];
 
-        // Conservative radial broad-phase (diagonal tip stays near outerR).
-        float minPossible = r.innerR * cosf(HALF_STEP) - DOT_RADIUS;
+        // Conservative radial broad-phase. Clipping only removes material, so
+        // a band still sits between its apothem and its circumradius.
+        float minPossible = r.innerR * COS_HALF_STEP - DOT_RADIUS;
         float maxPossible = r.outerR + DOT_RADIUS;
 
         if (rr < minPossible || rr > maxPossible)
             continue;
 
-        localSolidQuads(r, quads);
-        float base = (float)r.side * STEP;
-        float cb = cosf(base);
-        float sb = sinf(base);
+        ringLocalPolys(r, polys);
 
-        for (const auto& lq : quads)
+        for (const Poly& lp : polys)
         {
-            array<Vec2, 4> q;
-            for (int k = 0; k < 4; ++k)
-            {
-                Vec2 lp = lq[k];
-                q[k] = Vec2{lp.x * cb - lp.y * sb, lp.x * sb + lp.y * cb};
-            }
-
-            if (circleHitsQuad(p, DOT_RADIUS, q))
+            if (circleHitsPoly(p, DOT_RADIUS, rotatePoly(lp, (float)r.side * STEP)))
                 return true;
         }
     }
@@ -869,26 +601,17 @@ static void movePlayer(float dt)
 
 static void addRingVisual(DynamicMesh2D& m, const Ring& r, Vec4 color)
 {
-    float c = cosf(r.angle);
-    float s = sinf(r.angle);
+    vector<Poly> polys;
+    ringLocalPolys(r, polys);
 
-    auto rot = [&](Vec2 p) -> Vec2
+    // Local polys assume the opening at side 0; rotate the ring by r.angle.
+    // The clipped stem and bar are convex, so a fan off vertex 0 is enough.
+    for (const Poly& lp : polys)
     {
-        return Vec2{p.x * c - p.y * s, p.x * s + p.y * c};
-    };
+        Poly wp = rotatePoly(lp, r.angle);
 
-    vector<array<Vec2, 4>> quads;
-    localSolidQuads(r, quads);
-
-    // Local quads assume gap at side 0; rotate the whole ring by r.angle.
-    for (const auto& lq : quads)
-    {
-        Vec2 q0 = rot(lq[0]);
-        Vec2 q1 = rot(lq[1]);
-        Vec2 q2 = rot(lq[2]);
-        Vec2 q3 = rot(lq[3]);
-
-        m.addQuad(q0, q1, q2, q3, color);
+        for (size_t i = 1; i + 1 < wp.size(); ++i)
+            m.addTriangle(wp[0], wp[i], wp[i + 1], color);
     }
 }
 
@@ -897,29 +620,44 @@ static void addDoorHighlight(DynamicMesh2D& m)
     if (!doorUsable)
         return;
 
-    // All rings share the same gap orientation when the door is open.
-    // Passage is limited by the C opening; the green wedge also covers the
-    // backwards-Q notch flare (inset into the CW-adjacent bottom bar).
-    int side = rings[0].side;
-    float mid = (float)side * STEP;
+    // Two hints, both in the aligned opening's frame: a wedge across the C
+    // opening, then the straight corridor the backwards-Q notch leaves between
+    // its stem and its bottom bar. That corridor runs parallel to side 7's flat
+    // instead of straight out from the centre, so the way out is a dogleg.
+    float mid = (float)rings[0].side * STEP;
 
-    float a0 = mid - HALF_STEP * 0.72f;
-    float a1 = mid + HALF_STEP * 0.72f;
+    float c = cosf(mid);
+    float s = sinf(mid);
 
-    // Cover the Q-notch flare on outer rings (use abs — inset may be negative
-    // when the bottom bar extends toward the stem for a tight L-notch).
-    if (rings[1].pStyle || rings[2].pStyle)
-        a1 = mid + HALF_STEP + STEP * fabsf(P_GAP_INSET) * 0.85f;
-
-    float R = rings[2].outerR + 0.25f;
-
-    Vec2 o{0.0f, 0.0f};
-    Vec2 p1{R * cosf(a0), R * sinf(a0)};
-    Vec2 p2{R * cosf(a1), R * sinf(a1)};
+    auto rot = [&](Vec2 p) -> Vec2
+    {
+        return Vec2{p.x * c - p.y * s, p.x * s + p.y * c};
+    };
 
     Vec4 green{0.10f, 0.90f, 0.35f, 0.16f};
 
-    m.addTriangle(o, p1, p2, green);
+    float wedgeR = rings[0].outerR;
+
+    m.addTriangle(
+        rot(Vec2{0.0f, 0.0f}),
+        rot(Vec2{wedgeR * cosf(-HALF_STEP), wedgeR * sinf(-HALF_STEP)}),
+        rot(Vec2{wedgeR * cosf(HALF_STEP), wedgeR * sinf(HALF_STEP)}),
+        green
+    );
+
+    // Offset out along side 7's normal, then run perpendicular to it.
+    Vec2 n = sideNormal(7);
+    Vec2 along{-n.y, n.x};
+
+    float reach = rings[2].outerR + 0.25f;
+
+    m.addQuad(
+        rot(n * P_BAR_CLIP),
+        rot(n * P_STEM_CLIP),
+        rot(n * P_STEM_CLIP + along * reach),
+        rot(n * P_BAR_CLIP + along * reach),
+        green
+    );
 }
 
 // ---------------------------------------------------------------------------
