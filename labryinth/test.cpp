@@ -1136,11 +1136,71 @@ static int farthestByPath(const std::vector<uint8_t>& blocked, int from, std::ve
     return far;
 }
 
+// Index of any cell in the largest 4-connected walkable component, or -1 if
+// none. After sealOutsideMaze, speck islands of paper debris can remain; the
+// first walkable cell in raster order may lie on one of those, so diameter
+// search must start inside the main maze.
+static int largestWalkableSeed(const std::vector<uint8_t>& blocked)
+{
+    const int W = app.mazeW;
+    const int H = app.mazeH;
+    const size_t N = blocked.size();
+
+    std::vector<uint8_t> seen(N, 0);
+    std::vector<int> queue;
+    queue.reserve(N);
+
+    int bestSeed = -1;
+    size_t bestSize = 0;
+
+    for (size_t i = 0; i < N; ++i)
+    {
+        if (blocked[i] || seen[i])
+            continue;
+
+        queue.clear();
+        queue.push_back(static_cast<int>(i));
+        seen[i] = 1;
+        size_t size = 0;
+
+        for (size_t k = 0; k < queue.size(); ++k)
+        {
+            int cur = queue[k];
+            ++size;
+
+            int x = cur % W;
+            int y = cur / W;
+
+            auto visit = [&](int j)
+            {
+                if (blocked[j] || seen[j])
+                    return;
+                seen[j] = 1;
+                queue.push_back(j);
+            };
+
+            if (x > 0)      visit(cur - 1);
+            if (x < W - 1)  visit(cur + 1);
+            if (y > 0)      visit(cur - W);
+            if (y < H - 1)  visit(cur + W);
+        }
+
+        if (size > bestSize)
+        {
+            bestSize = size;
+            bestSeed = static_cast<int>(i);
+        }
+    }
+
+    return bestSeed;
+}
+
 // Put the markers at the two ends of the longest path through the maze. The
 // old rule took the first walkable cell in raster order and then the one
 // farthest from it in a straight line, which on a drawn maze is the top-left
 // corner of the paper and the bottom-right corner of the paper: a diagonal
-// stroll that never enters the maze at all.
+// stroll that never enters the maze at all. Seeding from the largest walkable
+// component keeps that diameter search off leftover speck islands.
 static void findDefaultStartFinish()
 {
     app.hasStart = false;
@@ -1148,15 +1208,7 @@ static void findDefaultStartFinish()
 
     std::vector<uint8_t> blocked = blockedMask();
 
-    int seed = -1;
-    for (size_t i = 0; i < blocked.size(); ++i)
-    {
-        if (!blocked[i])
-        {
-            seed = static_cast<int>(i);
-            break;
-        }
-    }
+    int seed = largestWalkableSeed(blocked);
 
     if (seed < 0)
     {
